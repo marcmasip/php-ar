@@ -1,20 +1,17 @@
-#🗡️ The Most Careless DBAL
+# 🗡️ The Most Careless DBAL
 **A hymn to simplicity, laziness, and brutal performance.**
+
 This is the memory of a warrior that operated in the shadows. 
 Born from the depths of ZendFramework 0.7 and distilled to its purest form. 
 In silence, this pattern handled hundreds of millions of requests, iterated through hordes of copies, and joined what purists said could not be joined. 
 It generated the darkest of SQL queries... and surprisingly, they flew.
 
 ## Features
+- Ninja Active Record: Minimal mapping. Convention over configuration (meaning: align your database fields with the table and shut up).
+- Zero Friction: Designed to write fast, execute faster, and stop overthinking objects.
+- Dark Performance: A particular commitment to OOP. We prioritize the freedom of the query to make precise data fly (sometimes). It embraces hybrid scenarios and custom projections (if you know what you are doing).
 
-    Ninja Active Record: Minimal mapping. Convention over configuration (meaning: align your database fields with the table and shut up).
-
-    Zero Friction: Designed to write fast, execute faster, and stop overthinking objects.
-
-    Dark Performance: The least possible commitment to OOP paradigms. We are here to spit queries and affect rows.
-
-    "Use it at your own risk. Or don't. It doesn't care—it has already survived deadlier battles than your startup."
-
+*"Use it at your own risk. Or don't. It doesn't care, it has already survived deadlier battles than your startup."*
 
 # Project Structure
 
