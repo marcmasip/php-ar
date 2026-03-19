@@ -3,7 +3,7 @@
 
 This is the memory of a warrior that operated in the shadows. 
 Born from the depths of ZendFramework 0.7 and distilled to its purest form. 
-In silence, this pattern handled hundreds of millions of requests, iterated through hordes of copies, and joined what purists said could not be joined. 
+In silence, this pattern handled hundreds+ of millions of rows, iterated through hordes of copies, and joined what purists said could not be joined. 
 It generated the darkest of SQL queries... and surprisingly, they flew.
 
 ## Features
