@@ -13,12 +13,6 @@ It generated the darkest of SQL queries... and surprisingly, they flew.
 
 *"Use it at your own risk. Or don't. It doesn't care, it has already survived deadlier battles than your startup."*
 
-# Project Structure
-
-- src/ar.php
-- README.md this file
-
-
 # 🚧 Disclaimer
 
 Fortunately/Unfortunately, this is an W.I.P. AI-enhanced simplification of the original pattern. 
@@ -67,4 +61,11 @@ $p->del();
 ``` 
 
 ---
+
+AI thingys
+# Project Structure
+
+- src/ar.php
+- README.md this file
+
 
