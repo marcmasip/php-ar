@@ -316,7 +316,7 @@ class rows implements Iterator, Countable
         $this->load();
         $result = [];
         foreach ($this->rows as $row) {
-            $result[$row->$key][] = $row;
+            $result[$row->$key][] = $row->arr();
         }
         return $result;
     }
