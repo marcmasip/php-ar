@@ -8,18 +8,19 @@ class db
     {
         if (self::$conn) return;
         
-        self::$conn = mysqli_connect($host, $user, $pass, $name);
-        if (!self::$conn) {
-            throw new Exception("db: connection failed");
+        mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+        
+        try {
+            self::$conn = mysqli_connect($host, $user, $pass, $name);
+            mysqli_set_charset(self::$conn, 'utf8mb4');
+        } catch (\mysqli_sql_exception $e) {
+            throw new Exception("db: connection failed - " . $e->getMessage());
         }
-        mysqli_set_charset(self::$conn, 'utf8mb4');
     }
 
     public static function conn(): mysqli
     {
-        if (!self::$conn) {
-            throw new Exception("db: not initialized");
-        }
+        if (!self::$conn) throw new Exception("db: not initialized");
         return self::$conn;
     }
 
@@ -31,20 +32,23 @@ class db
     public static function query(string $sql, array $bind = []): mysqli_result|bool
     {
         $stmt = mysqli_prepare(self::conn(), $sql);
-        if (!$stmt) {
-            throw new Exception("db: prepare failed - " . mysqli_error(self::conn()) . " | SQL: $sql");
-        }
-
+        
         if (!empty($bind)) {
-            $types = str_repeat('s', count($bind));
+            $types = '';
+            foreach ($bind as $val) {
+                if (is_int($val)) $types .= 'i';
+                elseif (is_float($val)) $types .= 'd';
+                else $types .= 's'; 
+            }
             mysqli_stmt_bind_param($stmt, $types, ...$bind);
         }
 
-        if (!mysqli_stmt_execute($stmt)) {
-            throw new Exception("db: execute failed - " . mysqli_stmt_error($stmt) . " | SQL: $sql");
-        }
+        mysqli_stmt_execute($stmt);
+        $result = mysqli_stmt_get_result($stmt) ?: true;
+        
+        mysqli_stmt_close($stmt);
 
-        return mysqli_stmt_get_result($stmt) ?: true;
+        return $result;
     }
 
     public static function exec(string $sql, array $bind = []): int
@@ -58,18 +62,34 @@ class db
         return mysqli_insert_id(self::conn());
     }
 
-    public static function fetch(sel|string $q, string|bool $as = false): rows
+    public static function fetch(sel|string $q, ?string $as = null): rows
     {
         $sql = $q instanceof sel ? $q->sql() : $q;
         $bind = $q instanceof sel ? $q->bind : [];
       
         $result = self::query($sql, $bind);
-        return new rows($result, $as, $q instanceof sel ? $q : null);
+        return new rows($result, $as ?: false, $q instanceof sel ? $q : null);
+    }
+
+    public static function begin(): void
+    {
+        mysqli_begin_transaction(self::conn());
+    }
+
+    public static function commit(): void
+    {
+        mysqli_commit(self::conn());
+    }
+
+    public static function rollback(): void
+    {
+        mysqli_rollback(self::conn());
     }
 }
 
 class sel {
-    private string $from;
+   private string $from;
+    public ?string $alias = null;
     private array $cols = ["*"];
     private array $where = [];
     private array $join = [];
@@ -79,9 +99,26 @@ class sel {
     private int $off = 0;
     
     public array $bind = [];
+	
+	public function as(string $alias): self
+    {
+        $this->alias = $alias;
+        return $this;
+    }
 
-    public function __construct(string $class){
-        $this->from = $class::TBL;
+   public function __construct(string|sel $from)
+    {
+        if ($from instanceof sel) {
+            $alias = $from->alias ?? 'sub_' . uniqid(); 
+            $this->from = "(" . $from->sql() . ") AS `$alias`";
+            $this->bind = $from->bind; //heredamos params de subconsulta
+            
+        } elseif (class_exists($from) && defined("$from::TBL")) {
+            $this->from = "`" . $from::TBL . "`";
+            
+        } else {
+            $this->from = preg_match('/^[a-zA-Z0-9_]+$/', $from) ? "`$from`" : $from;
+        }
     }
 
     public function select(string ...$cols): self{
@@ -89,21 +126,24 @@ class sel {
         return $this;
     }
 
+    public function whereFk(ar $obj): self
+    {
+        $fk = "fk_" . $obj::TBL;
+        $this->where[] = "`$fk` = ?";
+        $this->bind[] = $obj->id();
+        return $this;
+    }
+
     public function where(string $expr, mixed ...$vals): self
     {
-       
-        if (isset($vals[0]) && $vals[0] instanceof ar) {
-            $obj = $vals[0];
-            $fk = "fk_" . $obj::TBL;
-            $this->where[] = "`$fk` = ?";
-            $this->bind[] = $obj->id();
-            return $this;
-        }
-
-
         if (empty($vals)) {
             $this->where[] = $expr;
             return $this;
+        }
+
+        $expected_params = substr_count($expr, '?');
+        if ($expected_params !== count($vals)) {
+            throw new InvalidArgumentException("sel: El número de '?' ($expected_params) no coincide con los valores pasados (" . count($vals) . ") en: $expr");
         }
 
         $parts = explode('?', $expr);
@@ -116,10 +156,16 @@ class sel {
             if ($val instanceof sel) {
                 $final_expr .= '(' . $val->sql() . ')';
                 array_push($final_bind, ...$val->bind);
-            } else if (is_array($val)) {
-               
+                
+            } elseif (is_array($val)) {
+                if (empty($val)) throw new InvalidArgumentException("sel: No se puede pasar un array vacío a un placeholder '?'");
                 $final_expr .= implode(',', array_fill(0, count($val), '?'));
-                array_push($final_bind, ...$val);
+                array_push($final_bind, ...array_values($val));
+                
+            } elseif ($val instanceof ar) {
+                $final_expr .= '?';
+                $final_bind[] = $val->id();
+                
             } else {
                 $final_expr .= '?';
                 $final_bind[] = $val;
@@ -230,159 +276,187 @@ class sel {
     }
 }
 
-class rows implements Iterator, Countable
+class rows implements Iterator, Countable, ArrayAccess
 {
-    private mysqli_result|bool $res;
-    private string|bool $as = ar::class;
+    private mysqli_result|null $res;
+    private string|null $as;
     private ?sel $sel;
-    private int $n;
+    private int $n = 0;
     private int $pos = 0;
-    private ?array $rows = null;
+    
+    private ?array $all_rows = null;
+    private array $strong_cache = [];
+    private array $weak_cache = [];
+    
+    private const MAX_STRONG_CACHE = 100;
 
-    public function __construct(mysqli_result|bool $result, string|bool $as, ?sel $sel)
+    public function __construct(mysqli_result|bool $result, string|bool $as = ar::class, ?sel $sel = null)
     {
-        $this->res = $result;
-        $this->as = $as;
+        // Limpiamos los "bool|..." convirtiendo los false en null para evitar comprobaciones raras después
+        $this->res = $result instanceof mysqli_result ? $result : null;
+        $this->as = is_string($as) ? $as : null;
         $this->sel = $sel;
-        $this->n = $result instanceof mysqli_result ? mysqli_num_rows($result) : 0;
+        $this->n = $this->res ? mysqli_num_rows($this->res) : 0;
     }
 
-    private function load(): void
+    public function __destruct()
     {
-        if ($this->rows !== null) return;
-        if (!($this->res instanceof mysqli_result)) {
-            $this->rows = [];
+        $this->free_resources();
+    }
+
+    public function free_resources(): void
+    {
+        if ($this->res) {
+            mysqli_free_result($this->res);
+            $this->res = null;
+        }
+        $this->strong_cache = [];
+        $this->weak_cache = [];
+    }
+
+    private function load_all(): void
+    {
+        if ($this->all_rows !== null) return;
+        if (!$this->res) {
+            $this->all_rows = [];
             return;
         }
 
-        $this->rows = [];
+        $this->all_rows = [];
+        mysqli_data_seek($this->res, 0);
+        $class = $this->as ?: ar::class;
+        
         while ($data = mysqli_fetch_assoc($this->res)) {
-            if ($this->as) {
-                $this->rows[] = new $this->as($data, true);
-            } else {
-                $this->rows[] = new ar($data, true);
-            }
+            $this->all_rows[] = new $class($data, true);
         }
-        mysqli_free_result($this->res);
+        
+        $this->free_resources(); // Limpiamos red/RAM al instante
     }
 
-    // Terminales
+    private function fetch_at(int $offset): mixed 
+    {
+        if ($this->all_rows !== null) return $this->all_rows[$offset] ?? null;
+        if (!$this->res) return null;
+
+        // 1. Caché débil
+        if (isset($this->weak_cache[$offset]) && ($row = $this->weak_cache[$offset]->get())) {
+            return $row;
+        }
+
+        // 2. Fetch real
+        if (!mysqli_data_seek($this->res, $offset)) return null;
+        $data = mysqli_fetch_assoc($this->res);
+        if (!$data) return null;
+
+        $class = $this->as ?: ar::class;
+        $row = new $class($data, true);
+
+        // 3. Escribir cachés
+        $this->weak_cache[$offset] = \WeakReference::create($row);
+        $this->strong_cache[$offset] = $row;
+
+        if (count($this->strong_cache) > self::MAX_STRONG_CACHE) {
+            array_shift($this->strong_cache); 
+        }
+
+        return $row;
+    }
+
+    // --- Terminales ---
+
     public function first(): mixed
     {
-        $this->load();
-        return $this->rows[0] ?? null;
+        return $this->n === 0 ? null : $this->fetch_at(0);
     }
 
     public function all(): array
     {
-        $this->load();
-        return $this->rows;
+        $this->load_all();
+        return $this->all_rows;
     }
 
     public function arr(): array
     {
-        $this->load();
-        return array_map(fn($r) => is_object($r) && method_exists($r, 'arr') ? $r->arr() : (array)$r, $this->rows);
+        $this->load_all();
+        return array_map(fn($r) => method_exists($r, 'arr') ? $r->arr() : (array)$r, $this->all_rows);
     }
 
     public function col(string $key): array
     {
-        $this->load();
-        return array_unique(array_filter(array_column($this->rows, $key)));
+        if ($this->all_rows !== null) {
+            return array_unique(array_filter(array_column($this->all_rows, $key)));
+        }
+
+        $values = [];
+        foreach ($this as $row) {
+            $values[] = $row->$key ?? null; // Null safe
+        }
+        return array_unique(array_filter($values));
     }
 
     public function ids(): array
     {
-        if (!$this->as) {
-            throw new Exception("rows: ids() requires a class");
-        }
+        if (!$this->as) throw new Exception("rows: ids() requires a class");
+        // DRY: ¡Eliminado el bucle redundante! `col()` ya hace exactamente esto.
         return $this->col($this->as::PK);
     }
 
     public function map(string $key = null): array
     {
-        $this->load();
-        if ($key === null && $this->as) {
-            $key = $this->as::PK;
-        }
-        if ($key === null) {
-            throw new Exception("rows: map() requires a key");
-        }
-        return array_column($this->rows, null, $key);
+        $this->load_all();
+        $key ??= $this->as ? $this->as::PK : null; // Sintaxis moderna de coalescencia
+        
+        if ($key === null) throw new Exception("rows: map() requires a key");
+        
+        return array_column($this->all_rows, null, $key);
     }
 
     public function maplist(string $key): array
     {
-        $this->load();
+        $this->load_all();
         $result = [];
-        foreach ($this->rows as $row) {
-            $result[$row->$key][] = $row->arr();
+        foreach ($this->all_rows as $row) {
+            $result[$row->$key][] = method_exists($row, 'arr') ? $row->arr() : (array)$row;
         }
         return $result;
     }
 
-    // Relaciones
+    // --- Relaciones ---
+
     public function refs(string $cls, string $fk = null): rows
     {
-        $fk = $fk ?: "fk_" . $cls::TBL;
+        $fk ??= "fk_" . $cls::TBL;
         $ids = $this->col($fk);
-        
-        if (empty($ids)) {
-            return new rows(false, $cls, null);
-        }
-        
-        return $cls::sel()->where("`".$cls::PK."` IN (?)", $ids)->fetch();
+        return empty($ids) ? new rows(false, $cls, null) : $cls::sel()->where("`$fk` IN (?)", $ids)->fetch();
     }
 
     public function rels(string $cls, string $fk = null): rows
     {
-        if (!$this->as) {
-            throw new Exception("rows: rels() requires a class");
-        }
-        
-        $fk = $fk ?: "fk_" . $this->as::TBL;
+        if (!$this->as) throw new Exception("rows: rels() requires a class");
+        $fk ??= "fk_" . $this->as::TBL;
         $ids = $this->ids();
-        
-        if (empty($ids)) {
-            return new rows(false, $cls, null);
-        }
-        
-        return $cls::sel()->where("`$fk` IN (?)", $ids)->fetch();
+        return empty($ids) ? new rows(false, $cls, null) : $cls::sel()->where("`$fk` IN (?)", $ids)->fetch();
     }
 
-    // Iterator
-    public function rewind(): void
-    {
-        $this->load();
-        $this->pos = 0;
+    // --- Iterator & Countable ---
+
+    public function rewind(): void  { $this->pos = 0; }
+    public function current(): mixed { return $this->fetch_at($this->pos); }
+    public function key(): int      { return $this->pos; }
+    public function next(): void    { $this->pos++; }
+    public function count(): int    { return $this->n; }
+    
+    public function valid(): bool   
+    { 
+        return $this->pos < $this->n && $this->current() !== null; 
     }
 
-    public function current(): mixed
-    {
-        $this->load();
-        return $this->rows[$this->pos] ?? null;
-    }
-
-    public function key(): int
-    {
-        return $this->pos;
-    }
-
-    public function next(): void
-    {
-        ++$this->pos;
-    }
-
-    public function valid(): bool
-    {
-        $this->load();
-        return isset($this->rows[$this->pos]);
-    }
-
-    public function count(): int
-    {
-        return $this->n;
-    }
+    // --- Aporte: ArrayAccess ---
+    // Permite hacer $rows[5] directamente para obtener la fila 6 sin usar bucles
+    public function offsetExists(mixed $offset): bool { return is_int($offset) && $offset >= 0 && $offset < $this->n; }
+    public function offsetGet(mixed $offset): mixed   { return $this->fetch_at($offset); }
+    public function offsetSet(mixed $offset, mixed $value): void { throw new Exception("rows is read-only"); }
+    public function offsetUnset(mixed $offset): void  { throw new Exception("rows is read-only"); }
 }
 
 /**
@@ -561,4 +635,84 @@ class ar implements ArrayAccess
 	public function offsetUnset(mixed $offset): void {
 		unset( $this->_data[$offset] );
 	}
+}
+
+
+class ar_buffer
+{
+    /** @var array<string, ar[]> */
+    private array $pool = [];
+
+    public function add(ar $record): void
+    {
+        if ($record->clean()) return;
+        $cls = get_class($record);
+        $hash = spl_object_hash($record); 
+        $this->pool[$cls][$hash] = $record;
+    }
+
+    public function flush(): int
+    {
+        if (empty($this->pool)) return 0;
+
+        $total_affected = 0;
+        db::begin();
+        try {
+            foreach ($this->pool as $cls => $records) {
+                $total_affected += $this->flush_class($cls, array_values($records));
+            }
+            db::commit();
+        } catch (Exception $e) {
+            db::rollback();
+            throw clone $e;
+        }
+
+        $this->pool = [];
+        return $total_affected;
+    }
+
+    private function flush_class(string $cls, array $records): int
+    {
+        $all_cols = [];
+        foreach ($records as $r) {
+            $keys = $r->is_new() ? array_keys($r->dirty()) : array_merge(array_keys($r->dirty()), [$cls::PK]);
+            foreach ($keys as $k) $all_cols[$k] = true;
+        }
+
+        if (empty($all_cols)) return 0;
+        
+        $cols = array_keys($all_cols);
+        $cols_str = implode(',', array_map(fn($c) => "`$c`", $cols));
+        $row_placeholders = '(' . implode(',', array_fill(0, count($cols), '?')) . ')';
+        
+        $values_sql = [];
+        $binds = [];
+
+        foreach ($records as $r) {
+            $values_sql[] = $row_placeholders;
+            foreach ($cols as $col) {
+                $binds[] = $r->$col ?? null; 
+            }
+        }
+
+        $update_parts = [];
+        foreach ($cols as $col) {
+            if ($col !== $cls::PK) {
+                $update_parts[] = "`$col` = VALUES(`$col`)";
+            }
+        }
+
+        $sql = "INSERT INTO `" . $cls::TBL . "` ($cols_str) VALUES " . implode(', ', $values_sql);
+        if (!empty($update_parts)) {
+            $sql .= " ON DUPLICATE KEY UPDATE " . implode(', ', $update_parts);
+        }
+
+        $affected = db::exec($sql, $binds);
+
+        foreach ($records as $r) {
+            $r->mark_clean(); 
+        }
+
+        return $affected;
+    }
 }
