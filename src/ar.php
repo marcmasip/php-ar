@@ -287,19 +287,16 @@ class ar implements \ArrayAccess{
     static function find(mixed $id): ?static { return static::where('`' . static::PK . '` = ?', $id)->first(); }
     static function all(): rows         { return static::sel()->fetch(); }
 
-    function rels(string $cls, string $fk = null): sel
-    {
+    function rels(string $cls, string $fk = null): sel {
         return $cls::sel()->where('`' . ($fk ?? "fk_" . static::TBL) . '` = ?', $this->id());
     }
 
-    function refs(string $cls, string $fk = null): ?ar
-    {
+    function refs(string $cls, string $fk = null): ?ar {
         $fk_val = $this->{$fk ?? "fk_".$cls::TBL};
         return $fk_val ? $cls::find($fk_val) : null;
     }
 
-    function save(): static
-    {
+    function save(): static {
         if (!$this->_dirty) return $this;
 
         if ($this->_new) {
@@ -322,15 +319,13 @@ class ar implements \ArrayAccess{
         return $this;
     }
 
-    function del(): bool
-    {
+    function del(): bool {
         if ($this->_new) return false;
         db::exec("DELETE FROM `" . static::TBL . "` WHERE `" . static::PK . "` = ?", [$this->id()]);
         return true;
     }
 
-    function reload(): static
-    {
+    function reload(): static {
         if ($this->_new) throw new \Exception("ar: cannot reload unsaved record");
         $fresh = static::find($this->id()) ?? throw new \Exception("ar: record not found");
         $this->_data = $fresh->_data;
@@ -338,8 +333,7 @@ class ar implements \ArrayAccess{
         return $this;
     }
 
-    function mark_clean(): void
-    {
+    function mark_clean(): void {
         $this->_data  = array_merge($this->_data, $this->_dirty);
         $this->_dirty = [];
     }
@@ -350,7 +344,7 @@ class ar implements \ArrayAccess{
     function offsetUnset(mixed $k): void    { unset($this->_data[$k]); }
 }
 
-class ar_buffer{
+class ar_buffer{// the most careles batch / work of unit
     private array $pool = [];
 
     function add(ar $record): void {
