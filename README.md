@@ -10,12 +10,16 @@ It generated the darkest of SQL queries... and surprisingly, they flew.
 - Ninja Active Record: Minimal mapping. Convention over configuration (meaning: align your database fields with the table and shut up).
 - Zero Friction: Designed to write fast, execute faster, and stop overthinking objects.
 - Dark Performance: A particular commitment to OOP. We prioritize the freedom of the query to make precise data fly (sometimes). It embraces hybrid scenarios and custom projections (if you know what you are doing).
+- Includes: a kit for input validation.
 
 *"Use it at your own risk. Or don't. It doesn't care, it has already survived deadlier battles than your startup."*
 
 # 🚧 Disclaimer
 
 Fortunately/Unfortunately, this is an W.I.P. AI-enhanced simplification of the original pattern. 
+
+
+
 
 # Usage
 
